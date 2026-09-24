@@ -259,20 +259,20 @@ verdict=<span class="verdict-stale">STALE</span> target_slot=450106684 ref_slot=
       </section>
 
       <section class="section" id="why">
-        <span class="badge">Measured on our own desk · 2026-09-24 · 30-minute window</span>
+        <span class="badge">Measured on our own desk · 2026-09-24 · 30-minute window · before stale existed</span>
         <h2 class="section__label">Why we built it</h2>
-        <p>We sampled slot lag on RPC responses we were already using. Every quote was labelled fresh by the provider — stale measured the actual slot age against a reference endpoint.</p>
+        <p>Our own trading bot labelled every hop-1 quote it priced in half an hour "fresh" — 283 of 283. The ages it logged beside that word ran from four to eight seconds. The label was our code's, not any provider's, and it was wrong: the bot called a quote fresh because it was cached, without checking how old it was. We found it by reading the bot's own logs and judging the word by the number next to it. stale is that check, made into a tool you can point at any RPC.</p>
         <div class="stat-grid">
           <div class="stat">
-            <div class="stat__label">Quotes labelled fresh</div>
+            <div class="stat__label">Quotes our bot labelled fresh</div>
             <div class="stat__value">283 of 283</div>
           </div>
           <div class="stat">
-            <div class="stat__label">Median measured age</div>
+            <div class="stat__label">Median logged age</div>
             <div class="stat__value">4636 ms</div>
           </div>
           <div class="stat">
-            <div class="stat__label">Max measured age</div>
+            <div class="stat__label">Max logged age</div>
             <div class="stat__value">7807 ms</div>
           </div>
           <div class="stat">
@@ -287,6 +287,7 @@ verdict=<span class="verdict-stale">STALE</span> target_slot=450106684 ref_slot=
         <ul>
           <li>Compares against one reference — if both endpoints lag equally, stale cannot tell.</li>
           <li>Checks slot freshness, not whether account data is correct.</li>
+          <li>The verdict judges lag on the last sample of the window. A target that trailed and then caught up by the end reads FRESH.</li>
           <li>Read-only proxy — <code>sendTransaction</code> and <code>requestAirdrop</code> are refused.</li>
           <li>WebSocket fan-out waits for v0.2.</li>
         </ul>
