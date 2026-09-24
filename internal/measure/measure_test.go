@@ -14,12 +14,12 @@ import (
 )
 
 type slotServer struct {
-	slot       atomic.Uint64
-	frozen     bool
-	lag        int64
-	hang       bool
-	fail       bool
-	increment  bool
+	slot      atomic.Uint64
+	frozen    bool
+	lag       int64
+	hang      bool
+	fail      bool
+	increment bool
 }
 
 func (s *slotServer) handler(w http.ResponseWriter, r *http.Request) {
@@ -157,14 +157,14 @@ func TestComputeVerdictWithoutFrozenCheck(t *testing.T) {
 		{TargetOK: true, RefOK: true, TargetSlot: 100, RefSlot: 112, LagSlots: 12, LagMs: 4800},
 	}
 	result := measure.Result{
-		Samples:          samples,
-		TargetAdvanced:   false,
-		RefAnswered:      true,
-		TargetAnswered:   true,
-		LastLagSlots:     12,
-		LastLagMs:        4800,
-		LastTargetSlot:   100,
-		LastRefSlot:      112,
+		Samples:        samples,
+		TargetAdvanced: false,
+		RefAnswered:    true,
+		TargetAnswered: true,
+		LastLagSlots:   12,
+		LastLagMs:      4800,
+		LastTargetSlot: 100,
+		LastRefSlot:    112,
 	}
 	if got := measure.ComputeVerdict(result, 5); got != measure.VerdictStale {
 		t.Fatalf("ComputeVerdict = %q, want STALE when ref advanced and target frozen", got)

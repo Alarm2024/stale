@@ -10,13 +10,13 @@ import (
 )
 
 const (
-	DefaultRefURL     = "https://api.mainnet-beta.solana.com"
-	SlotDuration      = 400 * time.Millisecond
-	CallTimeout       = 2 * time.Second
-	DefaultMaxLag     = 5
-	DefaultSampleFor  = 10 * time.Second
-	SampleInterval    = time.Second
-	MinSamples        = 2
+	DefaultRefURL    = "https://api.mainnet-beta.solana.com"
+	SlotDuration     = 400 * time.Millisecond
+	CallTimeout      = 2 * time.Second
+	DefaultMaxLag    = 5
+	DefaultSampleFor = 10 * time.Second
+	SampleInterval   = time.Second
+	MinSamples       = 2
 )
 
 type Verdict string
@@ -50,26 +50,26 @@ type Sample struct {
 }
 
 type Result struct {
-	Verdict          Verdict
-	Samples          []Sample
-	TargetAdvanced   bool
-	LastTargetSlot   uint64
-	LastRefSlot      uint64
-	LastLagSlots     int64
-	LastLagMs        int64
-	AnyTimeout       bool
-	RefAnswered      bool
-	TargetAnswered   bool
+	Verdict        Verdict
+	Samples        []Sample
+	TargetAdvanced bool
+	LastTargetSlot uint64
+	LastRefSlot    uint64
+	LastLagSlots   int64
+	LastLagMs      int64
+	AnyTimeout     bool
+	RefAnswered    bool
+	TargetAnswered bool
 }
 
 type Config struct {
-	TargetURL  string
-	RefURL     string
-	MaxLag     int64
-	For        time.Duration
-	Now        func() time.Time
-	Sleep      func(context.Context, time.Duration) error
-	GetSlot    func(ctx context.Context, endpoint string) (uint64, error)
+	TargetURL string
+	RefURL    string
+	MaxLag    int64
+	For       time.Duration
+	Now       func() time.Time
+	Sleep     func(context.Context, time.Duration) error
+	GetSlot   func(ctx context.Context, endpoint string) (uint64, error)
 }
 
 func DefaultConfig(targetURL, refURL string) Config {

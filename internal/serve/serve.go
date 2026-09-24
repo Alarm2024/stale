@@ -18,10 +18,10 @@ import (
 const readOnlyMessage = "stale proxy is read-only"
 
 type Options struct {
-	Listen    string
-	Upstream  string
-	RefURL    string
-	MaxLag    int64
+	Listen   string
+	Upstream string
+	RefURL   string
+	MaxLag   int64
 }
 
 type Server struct {
@@ -138,15 +138,15 @@ func (s *Server) writeSnapshot(w http.ResponseWriter) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"upstream":          redact.URL(s.opts.Upstream),
-		"reference":         redact.URL(s.opts.RefURL),
-		"verdict":           snap.Verdict,
-		"lag_slots":         snap.LagSlots,
-		"sampled_ms_ago":    snap.SampledMsAgo,
-		"target_slot":       snap.TargetSlot,
-		"ref_slot":          snap.RefSlot,
-		"target_advanced":   snap.TargetAdvanced,
-		"measured":          snap.Measured,
+		"upstream":        redact.URL(s.opts.Upstream),
+		"reference":       redact.URL(s.opts.RefURL),
+		"verdict":         snap.Verdict,
+		"lag_slots":       snap.LagSlots,
+		"sampled_ms_ago":  snap.SampledMsAgo,
+		"target_slot":     snap.TargetSlot,
+		"ref_slot":        snap.RefSlot,
+		"target_advanced": snap.TargetAdvanced,
+		"measured":        snap.Measured,
 	})
 }
 
