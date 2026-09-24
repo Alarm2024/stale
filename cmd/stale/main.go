@@ -15,6 +15,9 @@ import (
 	"github.com/Alarm2024/stale/internal/serve"
 )
 
+// version is set at release build time: -ldflags "-X main.version=v0.1.1".
+var version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -26,6 +29,8 @@ func main() {
 		os.Exit(runCheck(os.Args[2:]))
 	case "serve":
 		os.Exit(runServe(os.Args[2:]))
+	case "version", "--version", "-v":
+		fmt.Println("stale", version)
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -36,15 +41,21 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `stale — measure how old a Solana RPC's answers really are
+	fmt.Fprintf(os.Stderr, `stale — how many slots a Solana RPC trails a reference endpoint
 
 Usage:
-  stale check <rpc-url> [--ref URL] [--max-lag-slots N] [--for DURATION]
-  stale serve --upstream URL [--listen ADDR] [--ref URL]
+  stale check <rpc-url> --ref <other-rpc-url> [--max-lag-slots N] [--for DURATION]
+  stale serve --upstream URL --ref <other-rpc-url> [--listen ADDR]
+  stale version
 
 Commands:
-  check   Sample getSlot on target vs reference and print a verdict
-  serve   Read-only JSON-RPC proxy with stale headers on every response
+  check   Sample getSlot (processed) on target and reference once a second
+          and print a verdict. Lag in ms is slots x 400, an estimate.
+  serve   Read-only JSON-RPC proxy. Every response it forwards from the
+          upstream carries X-Stale-* headers from the latest background sample.
+
+The reference defaults to https://api.mainnet-beta.solana.com; a target equal
+to its reference is refused, since lag against yourself is always 0.
 
 Verdicts: FRESH (0), STALE (1), UNKNOWN (2)
 `)

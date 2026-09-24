@@ -170,3 +170,30 @@ func TestComputeVerdictWithoutFrozenCheck(t *testing.T) {
 		t.Fatalf("ComputeVerdict = %q, want STALE when ref advanced and target frozen", got)
 	}
 }
+
+func TestSameEndpointIsRefused(t *testing.T) {
+	same := [][2]string{
+		{"https://api.mainnet-beta.solana.com", "https://api.mainnet-beta.solana.com"},
+		{"https://api.mainnet-beta.solana.com", "https://API.mainnet-beta.solana.com/"},
+		{"https://rpc.example.com/?api-key=a", "https://rpc.example.com:443?api-key=b"},
+	}
+	for _, p := range same {
+		if !measure.SameEndpoint(p[0], p[1]) {
+			t.Fatalf("%q and %q are one endpoint", p[0], p[1])
+		}
+		cfg := measure.DefaultConfig(p[0], p[1])
+		if _, err := measure.Run(context.Background(), cfg); err != measure.ErrSameEndpoint {
+			t.Fatalf("Run(%q vs %q) err = %v, want ErrSameEndpoint", p[0], p[1], err)
+		}
+	}
+	different := [][2]string{
+		{"https://rpc.example.com", "https://api.mainnet-beta.solana.com"},
+		{"https://rpc.example.com/a", "https://rpc.example.com/b"},
+		{"http://127.0.0.1:8899", "http://127.0.0.1:18899"},
+	}
+	for _, p := range different {
+		if measure.SameEndpoint(p[0], p[1]) {
+			t.Fatalf("%q and %q are different endpoints", p[0], p[1])
+		}
+	}
+}
