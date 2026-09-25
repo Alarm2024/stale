@@ -124,6 +124,19 @@ func TestHealthyTargetIsFresh(t *testing.T) {
 	}
 }
 
+func TestFrozenReferenceIsNotFresh(t *testing.T) {
+	refSrv := newSlotServer(&slotServer{frozen: true, increment: true})
+	defer refSrv.Close()
+
+	targetSrv := newSlotServer(&slotServer{increment: true})
+	defer targetSrv.Close()
+
+	result := runCheck(t, targetSrv.URL, refSrv.URL, 5)
+	if result.Verdict != measure.VerdictUnknown {
+		t.Fatalf("verdict = %q, want UNKNOWN (frozen reference cannot vouch for the target)", result.Verdict)
+	}
+}
+
 func TestDeadReferenceIsUnknown(t *testing.T) {
 	refSrv := newSlotServer(&slotServer{fail: true})
 	defer refSrv.Close()
