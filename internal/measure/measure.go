@@ -53,6 +53,7 @@ type Sample struct {
 
 type Result struct {
 	Verdict        Verdict
+	Degraded       bool
 	Samples        []Sample
 	TargetAdvanced bool
 	LastTargetSlot uint64
@@ -255,29 +256,39 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		result.LastLagMs = last.LagMs
 	}
 	result.Verdict = ComputeVerdict(result, cfg.MaxLag)
+	result.Degraded = result.Verdict == VerdictStale && result.AnyTimeout
 	return result, nil
 }
 
 // ComputeVerdict derives a verdict from collected samples. Exported for tests
 // and the background sampler used by stale serve.
 func ComputeVerdict(result Result, maxLag int64) Verdict {
-	if len(result.Samples) < MinSamples {
+	// Only paired replies establish lag. A timeout must not overwrite a
+	// proven stale reading with a zero from the unanswered final sample.
+	var clean []Sample
+	for _, sample := range result.Samples {
+		if sample.TargetOK && sample.RefOK {
+			clean = append(clean, sample)
+		}
+	}
+	if len(clean) >= MinSamples {
+		if referenceAdvanced(clean) && !result.TargetAdvanced {
+			return VerdictStale
+		}
+		if clean[len(clean)-1].LagSlots > maxLag {
+			return VerdictStale
+		}
+	}
+	// A timeout still prevents a FRESH claim. The latest sample must be
+	// paired, and a live reference must vouch for an advancing target.
+	if len(result.Samples) < MinSamples || result.AnyTimeout ||
+		!result.RefAnswered || !result.TargetAnswered {
 		return VerdictUnknown
 	}
-	if result.AnyTimeout || !result.RefAnswered || !result.TargetAnswered {
-		return VerdictUnknown
-	}
-
-	refAdvanced := referenceAdvanced(result.Samples)
-	if refAdvanced && !result.TargetAdvanced {
-		return VerdictStale
-	}
-	if result.LastLagSlots > maxLag {
-		return VerdictStale
-	}
-	// FRESH also needs a live reference: a reference that never advanced
-	// over the window cannot vouch for the target, whatever the lag reads.
-	if result.TargetAdvanced && result.LastLagSlots <= maxLag && refAdvanced {
+	if result.TargetAdvanced && result.LastLagSlots <= maxLag &&
+		result.Samples[len(result.Samples)-1].TargetOK &&
+		result.Samples[len(result.Samples)-1].RefOK &&
+		referenceAdvanced(result.Samples) {
 		return VerdictFresh
 	}
 	return VerdictUnknown
