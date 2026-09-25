@@ -210,3 +210,74 @@ func TestSameEndpointIsRefused(t *testing.T) {
 		}
 	}
 }
+
+func TestTimeoutPreservesProvenStale(t *testing.T) {
+	for _, timeout := range []struct {
+		name   string
+		sample measure.Sample
+	}{
+		{"target timeout last", measure.Sample{RefOK: true, RefSlot: 111}},
+		{"reference timeout last", measure.Sample{TargetOK: true, TargetSlot: 10}},
+		{"both timeout last", measure.Sample{}},
+	} {
+		t.Run(timeout.name, func(t *testing.T) {
+			samples := make([]measure.Sample, 10, 11)
+			for i := range samples {
+				samples[i] = measure.Sample{TargetOK: true, RefOK: true, TargetSlot: 10, RefSlot: 110, LagSlots: 100}
+			}
+			samples = append(samples, timeout.sample)
+			result := measure.Result{Samples: samples, AnyTimeout: true, TargetAnswered: true, RefAnswered: true}
+			if got := measure.ComputeVerdict(result, 5); got != measure.VerdictStale {
+				t.Fatalf("ComputeVerdict = %s, want STALE after 10 paired lag=100 samples and timeout", got)
+			}
+		})
+	}
+}
+
+func TestTimeoutWithoutEnoughCleanEvidenceIsUnknown(t *testing.T) {
+	for name, samples := range map[string][]measure.Sample{
+		"one clean": {
+			{TargetOK: true, RefOK: true, TargetSlot: 10, RefSlot: 110, LagSlots: 100},
+			{},
+		},
+		"unpaired slots cannot establish lag": {
+			{TargetOK: true, TargetSlot: 10},
+			{RefOK: true, RefSlot: 110},
+			{},
+		},
+		"clean samples not stale": {
+			{TargetOK: true, RefOK: true, TargetSlot: 100, RefSlot: 101, LagSlots: 1},
+			{TargetOK: true, RefOK: true, TargetSlot: 101, RefSlot: 102, LagSlots: 1},
+			{},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := measure.Result{Samples: samples, AnyTimeout: true, TargetAnswered: true, RefAnswered: true, TargetAdvanced: true}
+			if got := measure.ComputeVerdict(result, 5); got != measure.VerdictUnknown {
+				t.Fatalf("ComputeVerdict = %s, want UNKNOWN", got)
+			}
+		})
+	}
+}
+
+func TestCleanSamplesDoNotUseUnpairedFinalLag(t *testing.T) {
+	result := measure.Result{Samples: []measure.Sample{
+		{TargetOK: true, RefOK: true, TargetSlot: 100, RefSlot: 101, LagSlots: 1},
+		{TargetOK: true, RefOK: true, TargetSlot: 101, RefSlot: 102, LagSlots: 1},
+		{TargetOK: true, RefSlot: 200, LagSlots: 99},
+	}, LastLagSlots: 99, TargetAdvanced: true, RefAnswered: true, TargetAnswered: true}
+	if got := measure.ComputeVerdict(result, 5); got != measure.VerdictUnknown {
+		t.Fatalf("ComputeVerdict = %s, want UNKNOWN for unanswered last sample", got)
+	}
+}
+
+func TestTimeoutThenCleanProvenStale(t *testing.T) {
+	result := measure.Result{Samples: []measure.Sample{
+		{},
+		{TargetOK: true, RefOK: true, TargetSlot: 100, RefSlot: 110, LagSlots: 10},
+		{TargetOK: true, RefOK: true, TargetSlot: 100, RefSlot: 112, LagSlots: 12},
+	}, AnyTimeout: true, RefAnswered: true, TargetAnswered: true}
+	if got := measure.ComputeVerdict(result, 5); got != measure.VerdictStale {
+		t.Fatalf("ComputeVerdict = %s, want STALE with later clean evidence", got)
+	}
+}
