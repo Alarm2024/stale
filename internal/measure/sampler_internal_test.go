@@ -24,3 +24,18 @@ func TestNoSampleYetIsUnknown(t *testing.T) {
 		t.Fatalf("before any sample the verdict is %q, want UNKNOWN", got)
 	}
 }
+
+func TestHistoryWithTimeoutKeepsStaleButDoesNotClaimMeasuredFresh(t *testing.T) {
+	history := []sampleRecord{
+		{Sample: Sample{TargetOK: true, RefOK: true, TargetSlot: 100, RefSlot: 200, LagSlots: 100}},
+		{Sample: Sample{TargetOK: true, RefOK: true, TargetSlot: 100, RefSlot: 200, LagSlots: 100}},
+		{AnyTimeout: true},
+	}
+	result := resultFromHistory(history)
+	if got := ComputeVerdict(result, 5); got != VerdictStale || !result.AnyTimeout {
+		t.Fatalf("verdict=%s timeout=%t, want STALE with degraded timeout", got, result.AnyTimeout)
+	}
+	if result.LastLagSlots != 0 {
+		t.Fatalf("unanswered last sample must not report a known lag, got %d", result.LastLagSlots)
+	}
+}
