@@ -256,7 +256,9 @@ func ComputeVerdict(result Result, maxLag int64) Verdict {
 	if result.LastLagSlots > maxLag {
 		return VerdictStale
 	}
-	if result.TargetAdvanced && result.LastLagSlots <= maxLag {
+	// FRESH also needs a live reference: a reference that never advanced
+	// over the window cannot vouch for the target, whatever the lag reads.
+	if result.TargetAdvanced && result.LastLagSlots <= maxLag && refAdvanced {
 		return VerdictFresh
 	}
 	return VerdictUnknown
