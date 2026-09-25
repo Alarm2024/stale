@@ -163,6 +163,7 @@ func (s *Server) writeSnapshot(w http.ResponseWriter) {
 		"target_slot":     snap.TargetSlot,
 		"ref_slot":        snap.RefSlot,
 		"target_advanced": snap.TargetAdvanced,
+		"ref_behind":      snap.RefBehind,
 		"measured":        snap.Measured,
 	})
 }

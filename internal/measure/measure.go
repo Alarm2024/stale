@@ -49,6 +49,10 @@ type Sample struct {
 	LagSlots       int64
 	LagMs          int64
 	TargetAdvanced bool
+	// RefBehind is true when the reference's slot read below the target's in
+	// this sample. Lag is floored at 0, so without this flag a reference
+	// trailing its target is indistinguishable from perfect freshness.
+	RefBehind bool
 }
 
 type Result struct {
@@ -59,6 +63,7 @@ type Result struct {
 	LastRefSlot    uint64
 	LastLagSlots   int64
 	LastLagMs      int64
+	LastRefBehind  bool
 	AnyTimeout     bool
 	RefAnswered    bool
 	TargetAnswered bool
@@ -227,6 +232,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		if sample.TargetOK && sample.RefOK {
 			lag := int64(refSlot) - int64(targetSlot)
 			if lag < 0 {
+				sample.RefBehind = true
 				lag = 0
 			}
 			sample.LagSlots = lag
@@ -253,6 +259,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		result.LastRefSlot = last.RefSlot
 		result.LastLagSlots = last.LagSlots
 		result.LastLagMs = last.LagMs
+		result.LastRefBehind = last.RefBehind
 	}
 	result.Verdict = ComputeVerdict(result, cfg.MaxLag)
 	return result, nil
@@ -314,6 +321,10 @@ func FormatSampleLine(s Sample) string {
 	if s.TargetAdvanced {
 		adv = "yes"
 	}
-	return fmt.Sprintf("target=%s ref=%s lag=%d slots (%d ms) advanced=%s",
+	line := fmt.Sprintf("target=%s ref=%s lag=%d slots (%d ms) advanced=%s",
 		target, ref, s.LagSlots, s.LagMs, adv)
+	if s.RefBehind {
+		line += " ref_behind=yes"
+	}
+	return line
 }

@@ -22,6 +22,7 @@ type Snapshot struct {
 	TargetSlot     uint64    `json:"target_slot"`
 	RefSlot        uint64    `json:"ref_slot"`
 	TargetAdvanced bool      `json:"target_advanced"`
+	RefBehind      bool      `json:"ref_behind"`
 	Measured       bool      `json:"measured"`
 }
 
@@ -165,6 +166,7 @@ func (s *Sampler) collectSample(ctx context.Context) sampleRecord {
 	if sample.TargetOK && sample.RefOK {
 		lag := int64(refSlot) - int64(targetSlot)
 		if lag < 0 {
+			sample.RefBehind = true
 			lag = 0
 		}
 		sample.LagSlots = lag
@@ -195,6 +197,7 @@ func resultFromHistory(history []sampleRecord) Result {
 		result.LastRefSlot = last.RefSlot
 		result.LastLagSlots = last.LagSlots
 		result.LastLagMs = last.LagMs
+		result.LastRefBehind = last.RefBehind
 	}
 	result.TargetAdvanced = targetAdvanced(samples)
 	return result
