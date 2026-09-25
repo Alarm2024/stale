@@ -73,6 +73,10 @@ func runCheck(args []string) int {
 	maxLag := fs.Int64("max-lag-slots", measure.DefaultMaxLag, "maximum acceptable lag in slots")
 	forDur := fs.Duration("for", measure.DefaultSampleFor, "sampling window")
 	_ = fs.Parse(flagArgs)
+	if msg := leftoverArgMessage("check", fs); msg != "" {
+		fmt.Fprintln(os.Stderr, msg)
+		return 2
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -98,6 +102,10 @@ func runServe(args []string) int {
 	ref := fs.String("ref", measure.DefaultRefURL, "reference RPC URL")
 	maxLag := fs.Int64("max-lag-slots", measure.DefaultMaxLag, "maximum acceptable lag in slots")
 	_ = fs.Parse(args)
+	if msg := leftoverArgMessage("serve", fs); msg != "" {
+		fmt.Fprintln(os.Stderr, msg)
+		return 2
+	}
 
 	if *upstream == "" {
 		fmt.Fprintln(os.Stderr, "serve requires --upstream URL")
@@ -124,6 +132,28 @@ func runServe(args []string) int {
 		return 2
 	}
 	return 0
+}
+
+// leftoverArgMessage reports the first positional argument left over after
+// flag parsing, or "" when there is none. Go's flag package stops at the
+// first non-flag argument, so a copy-pasted "ref=... max_lag=5 for=10s"
+// would otherwise be silently ignored and the run would measure against the
+// defaults. When the argument names a known flag, the message points at the
+// flag it probably meant.
+func leftoverArgMessage(command string, fs *flag.FlagSet) string {
+	if fs.NArg() == 0 {
+		return ""
+	}
+	arg := fs.Arg(0)
+	name := strings.TrimLeft(arg, "-")
+	if i := strings.IndexByte(name, '='); i >= 0 {
+		name = name[:i]
+	}
+	name = strings.ReplaceAll(name, "_", "-")
+	if fs.Lookup(name) != nil {
+		return fmt.Sprintf("%s: unexpected argument %q - did you mean --%s?", command, arg, name)
+	}
+	return fmt.Sprintf("%s: unexpected argument %q", command, arg)
 }
 
 // splitRPCURL pulls the RPC endpoint out before flag parsing so hostnames like
