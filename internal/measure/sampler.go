@@ -125,7 +125,25 @@ func (s *Sampler) collectSample(ctx context.Context) sampleRecord {
 	sample := Sample{At: time.Now()}
 	record := sampleRecord{Sample: sample}
 
-	targetSlot, targetErr := s.cfg.GetSlot(ctx, s.cfg.TargetURL)
+	// See Run: the calls run together so the first call's round trip does
+	// not inflate the measured lag.
+	type slotResult struct {
+		slot uint64
+		err  error
+	}
+	targetCh := make(chan slotResult, 1)
+	refCh := make(chan slotResult, 1)
+	go func() {
+		slot, err := s.cfg.GetSlot(ctx, s.cfg.TargetURL)
+		targetCh <- slotResult{slot, err}
+	}()
+	go func() {
+		slot, err := s.cfg.GetSlot(ctx, s.cfg.RefURL)
+		refCh <- slotResult{slot, err}
+	}()
+	targetRes, refRes := <-targetCh, <-refCh
+	targetSlot, targetErr := targetRes.slot, targetRes.err
+	refSlot, refErr := refRes.slot, refRes.err
 	if targetErr != nil {
 		if errors.Is(targetErr, context.DeadlineExceeded) {
 			record.AnyTimeout = true
@@ -135,7 +153,6 @@ func (s *Sampler) collectSample(ctx context.Context) sampleRecord {
 		sample.TargetSlot = targetSlot
 	}
 
-	refSlot, refErr := s.cfg.GetSlot(ctx, s.cfg.RefURL)
 	if refErr != nil {
 		if errors.Is(refErr, context.DeadlineExceeded) {
 			record.AnyTimeout = true
