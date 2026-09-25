@@ -175,7 +175,27 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 
 		sample := Sample{At: cfg.Now()}
 
-		targetSlot, targetErr := cfg.GetSlot(ctx, cfg.TargetURL)
+		// The two calls run together: taken one after another, the first
+		// call's whole round trip lands in the measured lag as phantom slots
+		// the chain never produced. Concurrent calls shrink that bias to the
+		// difference between the two round trips.
+		type slotResult struct {
+			slot uint64
+			err  error
+		}
+		targetCh := make(chan slotResult, 1)
+		refCh := make(chan slotResult, 1)
+		go func() {
+			slot, err := cfg.GetSlot(ctx, cfg.TargetURL)
+			targetCh <- slotResult{slot, err}
+		}()
+		go func() {
+			slot, err := cfg.GetSlot(ctx, cfg.RefURL)
+			refCh <- slotResult{slot, err}
+		}()
+		targetRes, refRes := <-targetCh, <-refCh
+		targetSlot, targetErr := targetRes.slot, targetRes.err
+		refSlot, refErr := refRes.slot, refRes.err
 		if targetErr != nil {
 			if errors.Is(targetErr, context.DeadlineExceeded) {
 				anyTimeout = true
@@ -193,7 +213,6 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 			hasPrevTarget = true
 		}
 
-		refSlot, refErr := cfg.GetSlot(ctx, cfg.RefURL)
 		if refErr != nil {
 			if errors.Is(refErr, context.DeadlineExceeded) {
 				anyTimeout = true
