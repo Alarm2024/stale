@@ -1,8 +1,10 @@
 package serve
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -44,6 +46,9 @@ func New(opts Options) (*Server, error) {
 	upstream, err := url.Parse(opts.Upstream)
 	if err != nil {
 		return nil, fmt.Errorf("parse upstream: %w", err)
+	}
+	if measure.SameEndpoint(opts.Upstream, opts.RefURL) {
+		return nil, measure.ErrSameEndpoint
 	}
 
 	s := &Server{
@@ -123,26 +128,38 @@ func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 	s.proxy.ServeHTTP(w, r)
 }
 
+// addStaleHeaders stamps a forwarded response with the background sampler's
+// latest reading. The headers describe that reading -- the slot lag of the
+// upstream's getSlot against the reference -- not the age of this response.
+// A header is only set when there is a number behind it.
 func (s *Server) addStaleHeaders(resp *http.Response) error {
 	snap := s.sampler.Current()
-	resp.Header.Set("X-Stale-Lag-Slots", fmt.Sprintf("%d", snap.LagSlots))
-	resp.Header.Set("X-Stale-Sampled-Ms-Ago", fmt.Sprintf("%d", snap.SampledMsAgo))
 	resp.Header.Set("X-Stale-Verdict", string(snap.Verdict))
+	if snap.LagKnown {
+		resp.Header.Set("X-Stale-Lag-Slots", fmt.Sprintf("%d", snap.LagSlots))
+	}
+	if snap.HasSample {
+		resp.Header.Set("X-Stale-Sampled-Ms-Ago", fmt.Sprintf("%d", snap.SampledMsAgo))
+	}
 	return nil
 }
 
 func (s *Server) writeSnapshot(w http.ResponseWriter) {
 	snap := s.sampler.Current()
-	if !snap.Measured && snap.Verdict == measure.VerdictFresh {
-		snap.Verdict = measure.VerdictUnknown
+	var lag, ago any
+	if snap.LagKnown {
+		lag = snap.LagSlots
+	}
+	if snap.HasSample {
+		ago = snap.SampledMsAgo
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"upstream":        redact.URL(s.opts.Upstream),
 		"reference":       redact.URL(s.opts.RefURL),
 		"verdict":         snap.Verdict,
-		"lag_slots":       snap.LagSlots,
-		"sampled_ms_ago":  snap.SampledMsAgo,
+		"lag_slots":       lag,
+		"sampled_ms_ago":  ago,
 		"target_slot":     snap.TargetSlot,
 		"ref_slot":        snap.RefSlot,
 		"target_advanced": snap.TargetAdvanced,
@@ -150,25 +167,75 @@ func (s *Server) writeSnapshot(w http.ResponseWriter) {
 	})
 }
 
-type rpcRequest struct {
-	Method string `json:"method"`
-}
+var (
+	errNotObject       = errors.New("json-rpc request must be a single JSON object")
+	errNoMethod        = errors.New("json-rpc request has no method")
+	errAmbiguousMethod = errors.New("json-rpc request names its method more than once, or in a different case")
+	errTrailingData    = errors.New("json-rpc request has data after the object")
+)
 
+// jsonRPCMethod reads the method the upstream will act on, and refuses any
+// body where that could differ from what this guard sees.
+//
+// encoding/json matches struct keys case-insensitively and keeps the last
+// duplicate, while a strict upstream reads the exact "method" key and may keep
+// the first. So {"method":"sendTransaction","Method":"getSlot"} showed this
+// guard getSlot and the upstream sendTransaction. Walking the tokens, this
+// accepts exactly one key spelled "method", with a string value, in one
+// object with nothing after it -- and refuses everything else.
 func jsonRPCMethod(body []byte) (string, error) {
-	var req rpcRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	tok, err := dec.Token()
+	if err != nil {
 		return "", err
 	}
-	return req.Method, nil
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return "", errNotObject
+	}
+	var method string
+	seen := 0
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return "", err
+		}
+		key, _ := kt.(string)
+		if strings.EqualFold(key, "method") {
+			seen++
+			if key != "method" || seen > 1 {
+				return "", errAmbiguousMethod
+			}
+			if err := dec.Decode(&method); err != nil {
+				return "", err
+			}
+			continue
+		}
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return "", err
+		}
+	}
+	if _, err := dec.Token(); err != nil { // the closing '}'
+		return "", err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return "", errTrailingData
+	}
+	if seen == 0 || method == "" {
+		return "", errNoMethod
+	}
+	return method, nil
 }
 
+// isWriteMethod names the Solana RPC methods that change chain state. Compared
+// without case, so an upstream that is lenient about case cannot be reached.
 func isWriteMethod(method string) bool {
-	switch method {
-	case "sendTransaction", "requestAirdrop":
-		return true
-	default:
-		return false
+	for _, w := range []string{"sendTransaction", "requestAirdrop"} {
+		if strings.EqualFold(method, w) {
+			return true
+		}
 	}
+	return false
 }
 
 func writeReadOnlyError(w http.ResponseWriter, body []byte) {

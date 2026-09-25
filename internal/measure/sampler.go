@@ -9,13 +9,20 @@ import (
 
 // Snapshot is the latest measured state from a background sampler.
 type Snapshot struct {
-	Verdict        Verdict `json:"verdict"`
-	LagSlots       int64   `json:"lag_slots"`
-	SampledMsAgo   int64   `json:"sampled_ms_ago"`
-	TargetSlot     uint64  `json:"target_slot"`
-	RefSlot        uint64  `json:"ref_slot"`
-	TargetAdvanced bool    `json:"target_advanced"`
-	Measured       bool    `json:"measured"`
+	Verdict Verdict `json:"verdict"`
+	// LagSlots is meaningful only when LagKnown: both endpoints answered the
+	// last sample. Otherwise it is 0 and must not be read as "no lag".
+	LagSlots int64 `json:"lag_slots"`
+	LagKnown bool  `json:"lag_known"`
+	// SampledMsAgo is how old the last sample is at the moment Current() is
+	// called -- computed from SampledAt on every read, so it ages.
+	SampledMsAgo   int64     `json:"sampled_ms_ago"`
+	SampledAt      time.Time `json:"-"`
+	HasSample      bool      `json:"has_sample"`
+	TargetSlot     uint64    `json:"target_slot"`
+	RefSlot        uint64    `json:"ref_slot"`
+	TargetAdvanced bool      `json:"target_advanced"`
+	Measured       bool      `json:"measured"`
 }
 
 type sampleRecord struct {
@@ -51,7 +58,7 @@ func (s *Sampler) Start(ctx context.Context) {
 			select {
 			case <-runCtx.Done():
 				return
-			case tickAt := <-ticker.C:
+			case <-ticker.C:
 				record := s.collectSample(runCtx)
 				history = append(history, record)
 				if len(history) > 32 {
@@ -69,7 +76,9 @@ func (s *Sampler) Start(ctx context.Context) {
 				s.snapshot = Snapshot{
 					Verdict:        verdict,
 					LagSlots:       result.LastLagSlots,
-					SampledMsAgo:   time.Since(tickAt).Milliseconds(),
+					LagKnown:       record.TargetOK && record.RefOK,
+					SampledAt:      record.At,
+					HasSample:      true,
 					TargetSlot:     result.LastTargetSlot,
 					RefSlot:        result.LastRefSlot,
 					TargetAdvanced: result.TargetAdvanced,
@@ -90,10 +99,26 @@ func (s *Sampler) Stop() {
 	}
 }
 
+// Current returns the latest snapshot. Before the first sample there is no
+// reading at all, so the verdict is UNKNOWN rather than an empty string next
+// to a lag of 0 that reads like a perfect score.
 func (s *Sampler) Current() Snapshot {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.snapshot
+	snap := s.snapshot
+	s.mu.RUnlock()
+	return snap.at(time.Now())
+}
+
+func (snap Snapshot) at(now time.Time) Snapshot {
+	if !snap.HasSample {
+		snap.Verdict = VerdictUnknown
+		return snap
+	}
+	snap.SampledMsAgo = now.Sub(snap.SampledAt).Milliseconds()
+	if !snap.Measured && snap.Verdict == VerdictFresh {
+		snap.Verdict = VerdictUnknown
+	}
+	return snap
 }
 
 func (s *Sampler) collectSample(ctx context.Context) sampleRecord {

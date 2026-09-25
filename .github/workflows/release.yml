@@ -1,0 +1,51 @@
+name: release
+
+# Builds the Linux binaries and publishes them as a GitHub release, so a
+# server can install stale without compiling anything on itself.
+#   Actions → release → Run workflow → version v0.1.1
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag, e.g. v0.1.1"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: test
+        run: go test -race ./...
+
+      - name: build
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          case "$VERSION" in v[0-9]*) ;; *) echo "version must look like v0.1.1"; exit 1 ;; esac
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X main.version=$VERSION" \
+              -o "dist/stale-linux-$arch" ./cmd/stale
+          done
+          (cd dist && sha256sum stale-linux-* > SHA256SUMS && cat SHA256SUMS)
+          ./dist/stale-linux-amd64 version
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          gh release create "$VERSION" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "stale $VERSION" \
+            --notes "Linux binaries built by this workflow from $GITHUB_SHA with CGO off. Verify before installing: sha256sum -c SHA256SUMS"

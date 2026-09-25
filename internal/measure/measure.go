@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/solana-foundation/solana-go/v2/rpc"
@@ -108,9 +110,39 @@ func getSlot(ctx context.Context, endpoint string) (uint64, error) {
 	return client.GetSlot(callCtx, rpc.CommitmentProcessed)
 }
 
+// ErrSameEndpoint is returned when the target and the reference are one
+// endpoint. Lag against yourself is always 0, which would print FRESH for a
+// measurement that never happened.
+var ErrSameEndpoint = errors.New("target and reference are the same endpoint — pass --ref with a different RPC")
+
+// SameEndpoint reports whether two RPC URLs reach the same endpoint: same
+// scheme, host and port, and path. Credentials and query strings (API keys)
+// are ignored, since two keys on one host are still one server's view.
+func SameEndpoint(a, b string) bool {
+	norm := func(raw string) (string, bool) {
+		u, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || u.Host == "" {
+			return "", false
+		}
+		scheme := strings.ToLower(u.Scheme)
+		host := strings.ToLower(u.Hostname())
+		port := u.Port()
+		if (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
+			port = ""
+		}
+		return scheme + "://" + host + ":" + port + strings.TrimRight(u.Path, "/"), true
+	}
+	na, oka := norm(a)
+	nb, okb := norm(b)
+	return oka && okb && na == nb
+}
+
 func Run(ctx context.Context, cfg Config) (Result, error) {
 	if cfg.For <= 0 {
 		return Result{}, errors.New("sample duration must be positive")
+	}
+	if SameEndpoint(cfg.TargetURL, cfg.RefURL) {
+		return Result{}, ErrSameEndpoint
 	}
 	if cfg.MaxLag < 0 {
 		return Result{}, errors.New("max lag must be non-negative")
