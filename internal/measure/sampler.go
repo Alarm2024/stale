@@ -9,7 +9,8 @@ import (
 
 // Snapshot is the latest measured state from a background sampler.
 type Snapshot struct {
-	Verdict Verdict `json:"verdict"`
+	Verdict  Verdict `json:"verdict"`
+	Degraded bool    `json:"degraded"`
 	// LagSlots is meaningful only when LagKnown: both endpoints answered the
 	// last sample. Otherwise it is 0 and must not be read as "no lag".
 	LagSlots int64 `json:"lag_slots"`
@@ -84,6 +85,7 @@ func (s *Sampler) Start(ctx context.Context) {
 					RefSlot:        result.LastRefSlot,
 					TargetAdvanced: result.TargetAdvanced,
 					Measured:       measured,
+					Degraded:       verdict == VerdictStale && result.AnyTimeout,
 				}
 				if !measured && s.snapshot.Verdict == VerdictFresh {
 					s.snapshot.Verdict = VerdictUnknown
