@@ -135,6 +135,7 @@ func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 func (s *Server) addStaleHeaders(resp *http.Response) error {
 	snap := s.sampler.Current()
 	resp.Header.Set("X-Stale-Verdict", string(snap.Verdict))
+	resp.Header.Set("X-Stale-Degraded", fmt.Sprintf("%t", snap.Degraded))
 	if snap.LagKnown {
 		resp.Header.Set("X-Stale-Lag-Slots", fmt.Sprintf("%d", snap.LagSlots))
 	}
@@ -158,6 +159,7 @@ func (s *Server) writeSnapshot(w http.ResponseWriter) {
 		"upstream":        redact.URL(s.opts.Upstream),
 		"reference":       redact.URL(s.opts.RefURL),
 		"verdict":         snap.Verdict,
+		"degraded":        snap.Degraded,
 		"lag_slots":       lag,
 		"sampled_ms_ago":  ago,
 		"target_slot":     snap.TargetSlot,
