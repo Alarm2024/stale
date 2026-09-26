@@ -251,7 +251,8 @@
       <section class="section" id="example">
         <span class="badge">Synthetic</span>
         <h2 class="section__label">Example output</h2>
-        <pre class="code-block output"><code>stale check https://rpc.example.com ref=https://api.mainnet-beta.solana.com max_lag=5 for=10s
+        <pre class="code-block output"><code>$ stale check https://rpc.example.com --ref https://api.mainnet-beta.solana.com --max-lag-slots 5 --for 10s
+stale check https://rpc.example.com ref=https://api.mainnet-beta.solana.com max_lag=5 for=10s
 target=450106684 ref=450106712 lag=28 slots (11200 ms) advanced=no
 target=450106684 ref=450106716 lag=32 slots (12800 ms) advanced=no
 target=450106684 ref=450106720 lag=36 slots (14400 ms) advanced=no
@@ -290,7 +291,7 @@ verdict=<span class="verdict-stale">STALE</span> target_slot=450106684 ref_slot=
           <li>Measures slot lag with <code>getSlot</code> at <code>processed</code> commitment. It does not measure the age of account data, quotes, or any other answer.</li>
           <li>Lag in milliseconds is slots × 400&nbsp;ms, an estimate from the nominal slot time, not a measured duration.</li>
           <li>The verdict judges lag on the last sample of the window. A target that trailed and then caught up by the end reads FRESH.</li>
-          <li>The default reference, <code>api.mainnet-beta.solana.com</code>, is rate-limited. A refused or slow call makes the verdict UNKNOWN, never FRESH.</li>
+          <li>The default reference, <code>api.mainnet-beta.solana.com</code>, is rate-limited. A refused or timed-out call makes the verdict UNKNOWN, never FRESH. A slow call that answers inside the 2-second timeout is counted, and its delay lands in the measured lag.</li>
           <li>An endpoint measured against itself is refused — lag against yourself is always zero.</li>
           <li>Read-only proxy — <code>sendTransaction</code> and <code>requestAirdrop</code> are refused in any letter case, and a request that names its method twice or in two spellings is refused before it is forwarded.</li>
           <li>The proxy's <code>X-Stale-*</code> headers describe the latest background sample, not the response they arrive on.</li>
