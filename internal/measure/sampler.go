@@ -24,6 +24,9 @@ type Snapshot struct {
 	TargetAdvanced bool      `json:"target_advanced"`
 	RefBehind      bool      `json:"ref_behind"`
 	Measured       bool      `json:"measured"`
+	// Degraded: the verdict is STALE, proven by paired samples, while other
+	// samples in the window went unanswered.
+	Degraded bool `json:"degraded"`
 }
 
 type sampleRecord struct {
@@ -68,6 +71,7 @@ func (s *Sampler) Start(ctx context.Context) {
 
 				result := resultFromHistory(history)
 				verdict := ComputeVerdict(result, s.cfg.MaxLag)
+				result.Verdict = verdict
 				measured := len(result.Samples) >= MinSamples &&
 					result.RefAnswered &&
 					result.TargetAnswered &&
@@ -84,6 +88,7 @@ func (s *Sampler) Start(ctx context.Context) {
 					RefSlot:        result.LastRefSlot,
 					TargetAdvanced: result.TargetAdvanced,
 					Measured:       measured,
+					Degraded:       isDegraded(result),
 				}
 				if !measured && s.snapshot.Verdict == VerdictFresh {
 					s.snapshot.Verdict = VerdictUnknown
