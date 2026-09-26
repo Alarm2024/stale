@@ -67,6 +67,21 @@ type Result struct {
 	AnyTimeout     bool
 	RefAnswered    bool
 	TargetAnswered bool
+	// Degraded is true when the verdict is STALE but not every sample in the
+	// window got an answer from both endpoints. The STALE rests on the paired
+	// samples that did; the rest of the window is unmeasured.
+	Degraded bool
+}
+
+// LastLagKnown reports whether the final sample has an answer from both
+// endpoints. When it does not, LastLagSlots and LastLagMs are 0 as a
+// placeholder, not a measurement, and must not be printed as a lag.
+func (r Result) LastLagKnown() bool {
+	if len(r.Samples) == 0 {
+		return false
+	}
+	last := r.Samples[len(r.Samples)-1]
+	return last.TargetOK && last.RefOK
 }
 
 type Config struct {
@@ -262,32 +277,67 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		result.LastRefBehind = last.RefBehind
 	}
 	result.Verdict = ComputeVerdict(result, cfg.MaxLag)
+	result.Degraded = isDegraded(result)
 	return result, nil
 }
 
 // ComputeVerdict derives a verdict from collected samples. Exported for tests
 // and the background sampler used by stale serve.
+//
+// STALE and FRESH need different evidence. STALE can be proven by the samples
+// in which both endpoints answered, even if other calls in the window failed:
+// a target seen 100 slots behind twice does not become "unknown" because a
+// third call timed out. FRESH is a claim about the whole window, so it still
+// needs every call answered and a final sample from both endpoints.
 func ComputeVerdict(result Result, maxLag int64) Verdict {
+	if paired := pairedSamples(result.Samples); len(paired) >= MinSamples {
+		// A target seen advancing in any answered sample is not frozen.
+		if referenceAdvanced(paired) && !result.TargetAdvanced {
+			return VerdictStale
+		}
+		if paired[len(paired)-1].LagSlots > maxLag {
+			return VerdictStale
+		}
+	}
+
 	if len(result.Samples) < MinSamples {
 		return VerdictUnknown
 	}
 	if result.AnyTimeout || !result.RefAnswered || !result.TargetAnswered {
 		return VerdictUnknown
 	}
+	// A failed call that was not a timeout still leaves the final lag as a
+	// placeholder 0. FRESH is never read off a placeholder.
+	if !result.LastLagKnown() {
+		return VerdictUnknown
+	}
 
-	refAdvanced := referenceAdvanced(result.Samples)
-	if refAdvanced && !result.TargetAdvanced {
-		return VerdictStale
-	}
-	if result.LastLagSlots > maxLag {
-		return VerdictStale
-	}
 	// FRESH also needs a live reference: a reference that never advanced
 	// over the window cannot vouch for the target, whatever the lag reads.
-	if result.TargetAdvanced && result.LastLagSlots <= maxLag && refAdvanced {
+	if result.TargetAdvanced && result.LastLagSlots <= maxLag && referenceAdvanced(result.Samples) {
 		return VerdictFresh
 	}
 	return VerdictUnknown
+}
+
+// pairedSamples keeps the samples in which both endpoints answered. Only
+// those carry a lag.
+func pairedSamples(samples []Sample) []Sample {
+	var paired []Sample
+	for _, s := range samples {
+		if s.TargetOK && s.RefOK {
+			paired = append(paired, s)
+		}
+	}
+	return paired
+}
+
+// isDegraded is true for a STALE verdict reached with some samples unpaired.
+func isDegraded(result Result) bool {
+	if result.Verdict != VerdictStale {
+		return false
+	}
+	return len(pairedSamples(result.Samples)) < len(result.Samples)
 }
 
 func referenceAdvanced(samples []Sample) bool {
