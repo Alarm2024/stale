@@ -255,7 +255,7 @@
 target=450106684 ref=450106712 lag=28 slots (11200 ms) advanced=no
 target=450106684 ref=450106716 lag=32 slots (12800 ms) advanced=no
 target=450106684 ref=450106720 lag=36 slots (14400 ms) advanced=no
-verdict=<span class="verdict-stale">STALE</span> target_slot=450106684 ref_slot=450106720 lag=36 slots (14400 ms) target_advanced=false</code></pre>
+verdict=<span class="verdict-stale">STALE</span> target_slot=450106684 ref_slot=450106720 lag=36 slots (14400 ms) target_advanced=false ref_behind=false degraded=false</code></pre>
       </section>
 
       <section class="section" id="why">
@@ -290,7 +290,7 @@ verdict=<span class="verdict-stale">STALE</span> target_slot=450106684 ref_slot=
           <li>Measures slot lag with <code>getSlot</code> at <code>processed</code> commitment. It does not measure the age of account data, quotes, or any other answer.</li>
           <li>Lag in milliseconds is slots × 400&nbsp;ms, an estimate from the nominal slot time, not a measured duration.</li>
           <li>The verdict judges lag on the last sample of the window. A target that trailed and then caught up by the end reads FRESH.</li>
-          <li>The default reference, <code>api.mainnet-beta.solana.com</code>, is rate-limited. A refused or slow call makes the verdict UNKNOWN, never FRESH.</li>
+          <li>The default reference, <code>api.mainnet-beta.solana.com</code>, is rate-limited. A refused or slow call never produces FRESH. It can still end in STALE when at least two earlier samples, answered by both endpoints, already proved the lag; the verdict line then says <code>degraded=true</code> and prints <code>lag=unknown</code> if the last sample went unanswered.</li>
           <li>An endpoint measured against itself is refused — lag against yourself is always zero.</li>
           <li>Read-only proxy — <code>sendTransaction</code> and <code>requestAirdrop</code> are refused in any letter case, and a request that names its method twice or in two spellings is refused before it is forwarded.</li>
           <li>The proxy's <code>X-Stale-*</code> headers describe the latest background sample, not the response they arrive on.</li>

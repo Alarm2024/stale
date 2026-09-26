@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/solana-foundation/solana-go/v2/rpc"
@@ -49,9 +50,11 @@ type Sample struct {
 	LagSlots       int64
 	LagMs          int64
 	TargetAdvanced bool
-	// RefBehind is true when the reference's slot read below the target's in
-	// this sample. Lag is floored at 0, so without this flag a reference
-	// trailing its target is indistinguishable from perfect freshness.
+	// RefBehind: the reference answered a lower slot than the target did.
+	// LagSlots is never negative, so that case reads as a lag of 0 — the
+	// same number a perfectly fresh target gets. The flag keeps the two
+	// apart. It says nothing about the target; it says the reference read
+	// below it in this sample.
 	RefBehind bool
 }
 
@@ -67,6 +70,21 @@ type Result struct {
 	AnyTimeout     bool
 	RefAnswered    bool
 	TargetAnswered bool
+	// Degraded is true when the verdict is STALE but not every sample in the
+	// window got an answer from both endpoints. The STALE rests on the paired
+	// samples that did; the rest of the window is unmeasured.
+	Degraded bool
+}
+
+// LastLagKnown reports whether the final sample has an answer from both
+// endpoints. When it does not, LastLagSlots and LastLagMs are 0 as a
+// placeholder, not a measurement, and must not be printed as a lag.
+func (r Result) LastLagKnown() bool {
+	if len(r.Samples) == 0 {
+		return false
+	}
+	last := r.Samples[len(r.Samples)-1]
+	return last.TargetOK && last.RefOK
 }
 
 type Config struct {
@@ -178,65 +196,24 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 			return Result{}, err
 		}
 
-		sample := Sample{At: cfg.Now()}
+		at := cfg.Now()
+		target, ref := askBoth(ctx, cfg)
+		sample := pairSample(at, target, ref)
 
-		// The two calls run together: taken one after another, the first
-		// call's whole round trip lands in the measured lag as phantom slots
-		// the chain never produced. Concurrent calls shrink that bias to the
-		// difference between the two round trips.
-		type slotResult struct {
-			slot uint64
-			err  error
+		if target.timedOut() || ref.timedOut() {
+			anyTimeout = true
 		}
-		targetCh := make(chan slotResult, 1)
-		refCh := make(chan slotResult, 1)
-		go func() {
-			slot, err := cfg.GetSlot(ctx, cfg.TargetURL)
-			targetCh <- slotResult{slot, err}
-		}()
-		go func() {
-			slot, err := cfg.GetSlot(ctx, cfg.RefURL)
-			refCh <- slotResult{slot, err}
-		}()
-		targetRes, refRes := <-targetCh, <-refCh
-		targetSlot, targetErr := targetRes.slot, targetRes.err
-		refSlot, refErr := refRes.slot, refRes.err
-		if targetErr != nil {
-			if errors.Is(targetErr, context.DeadlineExceeded) {
-				anyTimeout = true
-			}
-			sample.TargetOK = false
-		} else {
-			sample.TargetOK = true
-			sample.TargetSlot = targetSlot
+		if sample.TargetOK {
 			targetAnswered = true
-			if hasPrevTarget && targetSlot > prevTarget {
+			if hasPrevTarget && sample.TargetSlot > prevTarget {
 				targetAdvanced = true
 				sample.TargetAdvanced = true
 			}
-			prevTarget = targetSlot
+			prevTarget = sample.TargetSlot
 			hasPrevTarget = true
 		}
-
-		if refErr != nil {
-			if errors.Is(refErr, context.DeadlineExceeded) {
-				anyTimeout = true
-			}
-			sample.RefOK = false
-		} else {
-			sample.RefOK = true
-			sample.RefSlot = refSlot
+		if sample.RefOK {
 			refAnswered = true
-		}
-
-		if sample.TargetOK && sample.RefOK {
-			lag := int64(refSlot) - int64(targetSlot)
-			if lag < 0 {
-				sample.RefBehind = true
-				lag = 0
-			}
-			sample.LagSlots = lag
-			sample.LagMs = lag * int64(SlotDuration/time.Millisecond)
 		}
 
 		samples = append(samples, sample)
@@ -253,59 +230,177 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		RefAnswered:    refAnswered,
 		TargetAnswered: targetAnswered,
 	}
-	if len(samples) > 0 {
-		last := samples[len(samples)-1]
-		result.LastTargetSlot = last.TargetSlot
-		result.LastRefSlot = last.RefSlot
-		result.LastLagSlots = last.LagSlots
-		result.LastLagMs = last.LagMs
-		result.LastRefBehind = last.RefBehind
-	}
+	result.copyLastSample()
 	result.Verdict = ComputeVerdict(result, cfg.MaxLag)
+	result.Degraded = isDegraded(result)
 	return result, nil
+}
+
+// copyLastSample lifts the final sample's readings onto the Result, where
+// check and serve print them without walking Samples. With no samples the
+// Last* fields stay at their zero values.
+func (r *Result) copyLastSample() {
+	if len(r.Samples) == 0 {
+		return
+	}
+	last := r.Samples[len(r.Samples)-1]
+	r.LastTargetSlot = last.TargetSlot
+	r.LastRefSlot = last.RefSlot
+	r.LastLagSlots = last.LagSlots
+	r.LastLagMs = last.LagMs
+	r.LastRefBehind = last.RefBehind
+}
+
+// slotAnswer is what one endpoint gave back to getSlot: a slot, or the error
+// that came instead of one.
+type slotAnswer struct {
+	slot uint64
+	err  error
+}
+
+func (a slotAnswer) ok() bool { return a.err == nil }
+
+// timedOut is true when the call was cut off by its deadline rather than
+// refused or failed outright. Only that case counts as a timeout for the
+// verdict.
+func (a slotAnswer) timedOut() bool { return errors.Is(a.err, context.DeadlineExceeded) }
+
+// askBoth asks the target and the reference for their slot at the same
+// moment and returns once both have answered or failed.
+//
+// The two must be in flight together. Asked one after the other, the chain
+// keeps producing slots during the first call's round trip, and every one
+// of them shows up in the difference as lag the target never had. Asked
+// together, only the gap between the two round trips can leak in.
+func askBoth(ctx context.Context, cfg Config) (target, ref slotAnswer) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		target.slot, target.err = cfg.GetSlot(ctx, cfg.TargetURL)
+	}()
+	go func() {
+		defer wg.Done()
+		ref.slot, ref.err = cfg.GetSlot(ctx, cfg.RefURL)
+	}()
+	wg.Wait()
+	return target, ref
+}
+
+// pairSample turns the two answers into one Sample taken at the given time.
+// An endpoint that failed leaves its OK flag false and its slot at 0. Lag
+// exists only when both answered.
+func pairSample(at time.Time, target, ref slotAnswer) Sample {
+	s := Sample{At: at}
+	if target.ok() {
+		s.TargetOK, s.TargetSlot = true, target.slot
+	}
+	if ref.ok() {
+		s.RefOK, s.RefSlot = true, ref.slot
+	}
+	if s.TargetOK && s.RefOK {
+		s.LagSlots, s.RefBehind = slotLag(s.TargetSlot, s.RefSlot)
+		s.LagMs = s.LagSlots * int64(SlotDuration/time.Millisecond)
+	}
+	return s
+}
+
+// slotLag is how many slots the target trails the reference by. It cannot
+// be negative: a reference that reads below the target gives a lag of 0 and
+// refBehind=true, so that the 0 is not mistaken for a target keeping pace.
+func slotLag(targetSlot, refSlot uint64) (lag int64, refBehind bool) {
+	if refSlot < targetSlot {
+		return 0, true
+	}
+	return int64(refSlot - targetSlot), false
 }
 
 // ComputeVerdict derives a verdict from collected samples. Exported for tests
 // and the background sampler used by stale serve.
+//
+// STALE and FRESH need different evidence. STALE can be proven by the samples
+// in which both endpoints answered, even if other calls in the window failed:
+// a target seen 100 slots behind twice does not become "unknown" because a
+// third call timed out. FRESH is a claim about the whole window, so it still
+// needs every call answered and a final sample from both endpoints.
 func ComputeVerdict(result Result, maxLag int64) Verdict {
+	if paired := pairedSamples(result.Samples); len(paired) >= MinSamples {
+		// A target seen advancing in any answered sample is not frozen.
+		if referenceAdvanced(paired) && !result.TargetAdvanced {
+			return VerdictStale
+		}
+		if paired[len(paired)-1].LagSlots > maxLag {
+			return VerdictStale
+		}
+	}
+
 	if len(result.Samples) < MinSamples {
 		return VerdictUnknown
 	}
 	if result.AnyTimeout || !result.RefAnswered || !result.TargetAnswered {
 		return VerdictUnknown
 	}
+	// A failed call that was not a timeout still leaves the final lag as a
+	// placeholder 0. FRESH is never read off a placeholder.
+	if !result.LastLagKnown() {
+		return VerdictUnknown
+	}
 
-	refAdvanced := referenceAdvanced(result.Samples)
-	if refAdvanced && !result.TargetAdvanced {
-		return VerdictStale
+	// The reference is the witness. If it stood still for the whole window
+	// it saw nothing, and a lag measured against it is a number without a
+	// witness: the target may be frozen at the same height, or the reference
+	// may be the stuck one. Either way there is no FRESH to hand out.
+	if !referenceAdvanced(result.Samples) {
+		return VerdictUnknown
 	}
-	if result.LastLagSlots > maxLag {
-		return VerdictStale
-	}
-	// FRESH also needs a live reference: a reference that never advanced
-	// over the window cannot vouch for the target, whatever the lag reads.
-	if result.TargetAdvanced && result.LastLagSlots <= maxLag && refAdvanced {
+	if result.TargetAdvanced && result.LastLagSlots <= maxLag {
 		return VerdictFresh
 	}
 	return VerdictUnknown
 }
 
-func referenceAdvanced(samples []Sample) bool {
-	var first, last uint64
-	var seen bool
+// pairedSamples keeps the samples in which both endpoints answered. Only
+// those carry a lag.
+func pairedSamples(samples []Sample) []Sample {
+	var paired []Sample
 	for _, s := range samples {
-		if !s.RefOK {
-			continue
+		if s.TargetOK && s.RefOK {
+			paired = append(paired, s)
 		}
-		if !seen {
-			first = s.RefSlot
-			last = s.RefSlot
-			seen = true
-			continue
-		}
-		last = s.RefSlot
 	}
-	return seen && last > first
+	return paired
+}
+
+// isDegraded is true for a STALE verdict reached with some samples unpaired.
+func isDegraded(result Result) bool {
+	if result.Verdict != VerdictStale {
+		return false
+	}
+	return len(pairedSamples(result.Samples)) < len(result.Samples)
+}
+
+// referenceAdvanced reports whether the reference ended the window on a
+// higher slot than it started it. Only the samples it answered count; a
+// dip in the middle does not matter, and a single answer cannot show
+// movement. This is the liveness the verdict asks of its witness.
+func referenceAdvanced(samples []Sample) bool {
+	slots := answeredRefSlots(samples)
+	if len(slots) < 2 {
+		return false
+	}
+	return slots[len(slots)-1] > slots[0]
+}
+
+// answeredRefSlots lists the reference's slot from every sample it
+// answered, in sample order.
+func answeredRefSlots(samples []Sample) []uint64 {
+	slots := make([]uint64, 0, len(samples))
+	for _, s := range samples {
+		if s.RefOK {
+			slots = append(slots, s.RefSlot)
+		}
+	}
+	return slots
 }
 
 func FormatSampleLine(s Sample) string {
@@ -321,10 +416,15 @@ func FormatSampleLine(s Sample) string {
 	if s.TargetAdvanced {
 		adv = "yes"
 	}
-	line := fmt.Sprintf("target=%s ref=%s lag=%d slots (%d ms) advanced=%s",
-		target, ref, s.LagSlots, s.LagMs, adv)
-	if s.RefBehind {
-		line += " ref_behind=yes"
+	fields := []string{
+		fmt.Sprintf("target=%s ref=%s lag=%d slots (%d ms) advanced=%s",
+			target, ref, s.LagSlots, s.LagMs, adv),
 	}
-	return line
+	// Printed only when set. On an ordinary sample the line stays as it
+	// always was; when the reference read behind, the lag=0 next to it gets
+	// its explanation.
+	if s.RefBehind {
+		fields = append(fields, "ref_behind=yes")
+	}
+	return strings.Join(fields, " ")
 }

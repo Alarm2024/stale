@@ -2,7 +2,6 @@ package measure
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"time"
 )
@@ -24,6 +23,9 @@ type Snapshot struct {
 	TargetAdvanced bool      `json:"target_advanced"`
 	RefBehind      bool      `json:"ref_behind"`
 	Measured       bool      `json:"measured"`
+	// Degraded: the verdict is STALE, proven by paired samples, while other
+	// samples in the window went unanswered.
+	Degraded bool `json:"degraded"`
 }
 
 type sampleRecord struct {
@@ -68,6 +70,7 @@ func (s *Sampler) Start(ctx context.Context) {
 
 				result := resultFromHistory(history)
 				verdict := ComputeVerdict(result, s.cfg.MaxLag)
+				result.Verdict = verdict
 				measured := len(result.Samples) >= MinSamples &&
 					result.RefAnswered &&
 					result.TargetAnswered &&
@@ -84,6 +87,7 @@ func (s *Sampler) Start(ctx context.Context) {
 					RefSlot:        result.LastRefSlot,
 					TargetAdvanced: result.TargetAdvanced,
 					Measured:       measured,
+					Degraded:       isDegraded(result),
 				}
 				if !measured && s.snapshot.Verdict == VerdictFresh {
 					s.snapshot.Verdict = VerdictUnknown
@@ -122,58 +126,17 @@ func (snap Snapshot) at(now time.Time) Snapshot {
 	return snap
 }
 
+// collectSample takes one sample the same way Run does: both endpoints are
+// asked together (see askBoth) and the pair is folded into a Sample. The
+// record also remembers whether either call hit its deadline, since the
+// verdict treats a timeout differently from any other failure.
 func (s *Sampler) collectSample(ctx context.Context) sampleRecord {
-	sample := Sample{At: time.Now()}
-	record := sampleRecord{Sample: sample}
-
-	// See Run: the calls run together so the first call's round trip does
-	// not inflate the measured lag.
-	type slotResult struct {
-		slot uint64
-		err  error
+	at := time.Now()
+	target, ref := askBoth(ctx, s.cfg)
+	return sampleRecord{
+		Sample:     pairSample(at, target, ref),
+		AnyTimeout: target.timedOut() || ref.timedOut(),
 	}
-	targetCh := make(chan slotResult, 1)
-	refCh := make(chan slotResult, 1)
-	go func() {
-		slot, err := s.cfg.GetSlot(ctx, s.cfg.TargetURL)
-		targetCh <- slotResult{slot, err}
-	}()
-	go func() {
-		slot, err := s.cfg.GetSlot(ctx, s.cfg.RefURL)
-		refCh <- slotResult{slot, err}
-	}()
-	targetRes, refRes := <-targetCh, <-refCh
-	targetSlot, targetErr := targetRes.slot, targetRes.err
-	refSlot, refErr := refRes.slot, refRes.err
-	if targetErr != nil {
-		if errors.Is(targetErr, context.DeadlineExceeded) {
-			record.AnyTimeout = true
-		}
-	} else {
-		sample.TargetOK = true
-		sample.TargetSlot = targetSlot
-	}
-
-	if refErr != nil {
-		if errors.Is(refErr, context.DeadlineExceeded) {
-			record.AnyTimeout = true
-		}
-	} else {
-		sample.RefOK = true
-		sample.RefSlot = refSlot
-	}
-
-	if sample.TargetOK && sample.RefOK {
-		lag := int64(refSlot) - int64(targetSlot)
-		if lag < 0 {
-			sample.RefBehind = true
-			lag = 0
-		}
-		sample.LagSlots = lag
-		sample.LagMs = lag * int64(SlotDuration/time.Millisecond)
-	}
-	record.Sample = sample
-	return record
 }
 
 func resultFromHistory(history []sampleRecord) Result {
@@ -191,14 +154,7 @@ func resultFromHistory(history []sampleRecord) Result {
 			result.RefAnswered = true
 		}
 	}
-	if len(samples) > 0 {
-		last := samples[len(samples)-1]
-		result.LastTargetSlot = last.TargetSlot
-		result.LastRefSlot = last.RefSlot
-		result.LastLagSlots = last.LagSlots
-		result.LastLagMs = last.LagMs
-		result.LastRefBehind = last.RefBehind
-	}
+	result.copyLastSample()
 	result.TargetAdvanced = targetAdvanced(samples)
 	return result
 }
