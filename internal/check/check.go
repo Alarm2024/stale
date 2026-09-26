@@ -43,14 +43,22 @@ func Run(ctx context.Context, opts Options) (measure.Verdict, error) {
 		fmt.Fprintln(opts.Out, measure.FormatSampleLine(sample))
 	}
 
-	fmt.Fprintf(opts.Out, "verdict=%s target_slot=%d ref_slot=%d lag=%d slots (%d ms) target_advanced=%t ref_behind=%t\n",
+	lag := "unknown"
+	if len(result.Samples) > 0 {
+		last := result.Samples[len(result.Samples)-1]
+		if last.TargetOK && last.RefOK {
+			lag = fmt.Sprintf("%d slots (%d ms)", result.LastLagSlots, result.LastLagMs)
+		}
+	}
+
+	fmt.Fprintf(opts.Out, "verdict=%s target_slot=%d ref_slot=%d lag=%s target_advanced=%t ref_behind=%t degraded=%t\n",
 		result.Verdict,
 		result.LastTargetSlot,
 		result.LastRefSlot,
-		result.LastLagSlots,
-		result.LastLagMs,
+		lag,
 		result.TargetAdvanced,
 		result.LastRefBehind,
+		result.Degraded,
 	)
 
 	return result.Verdict, nil
